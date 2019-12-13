@@ -23,6 +23,22 @@ sudo mkdir -p /var/log/wso2
 echo "create facters directory"
 sudo mkdir -p /etc/facter/facts.d
 
+
+#make file system to mkfs /dev/xvdf
+sudo mkfs.xfs /dev/xvdk
+
+sudo mount /dev/xvdk /mnt
+
+echo "update fstab"
+sudo cp /etc/fstab /etc/fstab.orig
+
+sudo cat > fstab <<EOF
+LABEL=cloudimg-rootfs	/	 ext4	defaults,discard	0 0
+/dev/xvdk      /mnt    auto    defaults,nofail,comment=cloudconfig 0 2
+EOF
+
+sudo mv fstab /etc/fstab
+
 #Configure the JAVA_HOME
 echo "Downloading java"
 git clone https://github.com/ChinthakaHasakelum/sample.git
@@ -120,7 +136,14 @@ sudo sed -i 's/#Banner.*/Banner \/etc\/ssh\/banner/g' /etc/ssh/sshd_config
 echo "SSH Status:"
 echo `service ssh status`
 
-sudo cat > /tmp/cloudwatch-base.conf << EOF
+sudo cat > set_history_format.sh << EOF
+    #!/bin/bash
+    export HISTTIMEFORMAT="%F %T "
+EOF
+
+sudo mv set_history_format.sh /etc/profile.d/set_history_format.sh
+
+sudo cat > cloudwatch-base.conf << EOF
     [general]
     state_file = /var/awslogs/state/agent-state
     [/var/log/syslog]
@@ -135,7 +158,7 @@ EOF
 # Installing CloudWatch
 echo "installing awslogs agent"
 sudo curl https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py -O
-sudo python ./awslogs-agent-setup.py --region us-east-1 --non-interactive --configfile=/tmp/cloudwatch-base.conf
+sudo python ./awslogs-agent-setup.py --region us-east-1 --non-interactive --configfile=cloudwatch-base.conf --python=/usr/bin/python2.7
 
 #install aws cli from bundle
 echo "installing aws cli"
@@ -171,7 +194,6 @@ EOF
 
 sudo mv 95_puppet.cfg /etc/cloud/cloud.cfg.d/95_puppet.cfg
 
-
 sudo cp /etc/security/limits.conf /etc/security/limits.conf.orig
 sudo cat > limits.conf << EOF
     wso2user         soft     nofile          65535
@@ -199,7 +221,6 @@ EOF
 
 sudo mv sysctl.conf /etc/sysctl.conf
 
-
 sudo cat > set_alias.sh << EOF
     #!/bin/bash
     # do not delete / or prompt if deleting more than 3 files at a time #
@@ -222,17 +243,9 @@ EOF
 
 sudo mv set_alias.sh /etc/profile.d/set_alias.sh
 
-sudo cat > set_history_format.sh << EOF
-    #!/bin/bash
-    export HISTTIMEFORMAT="%F %T "
-EOF
-
-sudo mv set_history_format.sh /etc/profile.d/set_history_format.sh
 sudo chmod -R 754 /etc/profile.d/
-
 
 #Make puppet lib dir
 sudo mkdir /var/lib/puppet
 sudo chown puppet:puppet /var/lib/puppet
 sudo chmod 755 /var/lib/puppet
-
