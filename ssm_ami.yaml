@@ -1,0 +1,453 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: " This cloudformation template creates resources required to set up a
+  Automated AMI Pipeline"
+Parameters:
+  productName:
+    Type: String
+    Default: Product
+    Description: The product for which you intend to use the ami pipeline.
+  productOSAndVersion:
+    Type: String
+    Default: ubuntu-18
+    Description: Operating system name and OS version.
+  buildVersion:
+    Type: String
+    Default: '1'
+    Description: Build-Version corresponding to your product
+  cidrVPC:
+    Description: An available CIDR block for creating a new VPC. This VPC is only
+      for creating the AMI
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.0.0.0/16
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  cidrPrivateSubnet:
+    Description: An available CIDR block for creating a new VPC. The size of the VPC
+      should be big enough to hold instances of all your AMIs at a time
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.0.1.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  cidrPublicSubnet:
+    Description: An available CIDR block for creating a new VPC.
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.0.2.0/24
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  instanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - m5.large
+    - c5.large
+    Description: If you're running your application on m5 or c5 t2, Please select
+      the correct instance type here.
+Mappings:
+  RegionMap:
+    us-east-1:
+      HVM64: ami-04b9e92b5572fa0d1
+    us-east-2:
+      HVM64: ami-0d5d9d301c853a04a
+    us-west-1:
+      HVM64: ami-0dd655843c87b6930
+    us-west-2:
+      HVM64: ami-06d51e91cea0dac8d
+    eu-west-1:
+      HVM64: ami-02df9ea15c1778c9c
+    eu-west-2:
+      HVM64: ami-0be057a22c63962cb
+    ap-northeast-1:
+      HVM64: ami-0f9af249e7fa6f61b
+    ap-southeast-1:
+      HVM64: ami-061eb2b23f9f8839c
+    ap-southeast-2:
+      HVM64: ami-00a54827eb7ffcd3c
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      CidrBlock:
+        Ref: cidrVPC
+  subnetPrivate:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock:
+        Ref: cidrPrivateSubnet
+      VpcId:
+        Ref: VPC
+  subnetPublic:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: true
+      CidrBlock:
+        Ref: cidrPublicSubnet
+      VpcId:
+        Ref: VPC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  PublicVPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: PublicVPCGatewayAttachment
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: subnetPublic
+      RouteTableId:
+        Ref: PublicRouteTable
+  NAT:
+    DependsOn: EIP
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - EIP
+        - AllocationId
+      SubnetId:
+        Ref: subnetPublic
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NAT
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NAT
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: subnetPrivate
+      RouteTableId:
+        Ref: PrivateRouteTable
+  secGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Allow HTTP traffic
+      SecurityGroupIngress: []
+  ManagedInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Path: "/"
+  ManagedInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: ManagedInstanceRole
+  AutomationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
+      Path: "/"
+      Policies:
+      - PolicyName: passrole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - iam:PassRole
+            - s3:Get*
+            - s3:List*
+            Resource:
+            - Fn::GetAtt:
+              - ManagedInstanceRole
+              - Arn
+  AMIAutomationDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Automation
+      Content:
+        description: This automation document triggers AMI creation workflow.
+        schemaVersion: '0.3'
+        assumeRole:
+          Fn::GetAtt:
+          - AutomationServiceRole
+          - Arn
+        parameters:
+          sourceAMIid:
+            type: String
+            description: Source/Base AMI to be used for generating your Automated
+              AMI
+            default:
+              Fn::FindInMap:
+              - RegionMap
+              - Ref: AWS::Region
+              - HVM64
+          wumusername:
+            type: String
+            description: wso2 account username/email
+            default: None
+          wumpassword:
+            type: String
+            description: wso2 account password
+            default: None
+          productName:
+            type: String
+            description: The syntax of this parameter is ProductName-ProductVersion.
+            default:
+              Ref: productName
+          productOSAndVersion:
+            type: String
+            description: The syntax of this parameter is OSName-OSVersion
+            default:
+              Ref: productOSAndVersion
+          AMIVersion:
+            type: String
+            description: Automated AMI Build version number to be created.
+            default:
+              Ref: buildVersion
+          subnetId:
+            type: String
+            default:
+              Ref: subnetPrivate
+            description: Subnet in which instances will be launched.
+          securityGroupId:
+            type: String
+            default:
+              Ref: secGroup
+            description: Security Group that will be attached to the instance. By
+              Default a security group without any inbound access is attached
+          instanceType:
+            type: String
+            description: A compatible instance-type for launching an instance
+            allowedValues:
+            - t2.micro
+            - m5.large
+            - c5.large
+            default:
+              Ref: instanceType
+          requiredproduct:
+            type: String
+            description: Name for the Product to be created
+            allowedValues:
+            - wso2am-2.6.0
+            - wso2am-3.0.0
+            - wso2ei-6.0.0
+            default: wso2am-2.6.0
+          targetAMIname:
+            type: String
+            description: Name for the AMI to be created
+            default: "{{requiredproduct}}-{{productOSAndVersion}}-{{AMIVersion}}"
+          ManagedInstanceProfile:
+            type: String
+            description: Instance Profile. Do not change the default value.
+            default:
+              Ref: ManagedInstanceProfile
+          SSMInstallationUserData:
+            type: String
+            description: Base64 encoded SSM installation user-data. 
+            default: IyEvYmluL2Jhc2gKYXB0LWdldCB1cGRhdGUKYXB0LWdldCBpbnN0YWxsIGFwYWNoZTIgLXk=
+          DeviceName:
+            type: String
+            description: Add the Device name that ebs should mount
+            default: "/dev/sdk"
+          S3url:
+            type: String
+            description: S3 url for latest Wum updated pack
+            default: "None"
+        mainSteps:
+        - name: startInstances
+          action: aws:runInstances
+          timeoutSeconds: 3600
+          maxAttempts: 2
+          onFailure: Abort
+          inputs:
+            ImageId: "{{ sourceAMIid}}"
+            InstanceType: "{{instanceType}}"
+            MinInstanceCount: 1
+            MaxInstanceCount: 1
+            SubnetId: "{{ subnetId }}"
+            SecurityGroupIds:
+            - "{{ securityGroupId }}"
+            UserData: "{{SSMInstallationUserData}}"
+            IamInstanceProfileName: "{{ ManagedInstanceProfile }}"
+            BlockDeviceMappings:
+            - DeviceName: "{{DeviceName}}"
+              Ebs:
+                DeleteOnTermination: true
+                VolumeSize: 25
+                VolumeType: gp2
+                Encrypted: true
+        - name: sleep
+          action: aws:sleep
+          inputs:
+            Duration: PT3M
+        - name: Run Shell Scripts
+          action: aws:runCommand
+          maxAttempts: 3
+          timeoutSeconds: 3600
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-RunShellScript
+            InstanceIds:
+            - "{{startInstances.InstanceIds}}"
+            Parameters:
+              commands:
+              - tar -C /usr/local -xzf wum-3.0.6-linux-x64.tar.gz
+              - export PATH=$PATH:/usr/local/bin
+        - name: stopInstance
+          action: aws:changeInstanceState
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            InstanceIds:
+            - "{{ startInstances.InstanceIds }}"
+            DesiredState: stopped
+        - name: createImage
+          action: aws:createImage
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            InstanceId: "{{ startInstances.InstanceIds }}"
+            ImageName: "{{ targetAMIname }}"
+            NoReboot: true
+            ImageDescription: AMI created by EC2 Automation
+        - name: TagTheAMI
+          action: aws:createTags
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            ResourceType: EC2
+            ResourceIds:
+            - "{{ createImage.ImageId }}"
+            Tags:
+            - Key: Name
+              Value: HASHAMI2
+            - Key: ProductOSAndVersion
+              Value: "{{productOSAndVersion}}"
+            - Key: ProductName
+              Value: "{{requiredproduct}}"
+            - Key: version
+              Value: "{{AMIVersion}}"
+            - Key: AMI-Type
+              Value: Automated
+        - name: terminateFirstInstance
+          action: aws:changeInstanceState
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            InstanceIds:
+            - "{{ startInstances.InstanceIds }}"
+            DesiredState: terminated
+        - name: createInstanceFromNewImage
+          action: aws:runInstances
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            ImageId: "{{ createImage.ImageId }}"
+            InstanceType: "{{instanceType}}"
+            MinInstanceCount: 1
+            MaxInstanceCount: 1
+            SubnetId: "{{ subnetId }}"
+            SecurityGroupIds:
+            - "{{ securityGroupId }}"
+            IamInstanceProfileName: "{{ ManagedInstanceProfile }}"
+        - name: InstallInspector
+          action: aws:runCommand
+          maxAttempts: 3
+          timeoutSeconds: 3600
+          onFailure: Abort
+          inputs:
+            DocumentName: AmazonInspector-ManageAWSAgent
+            InstanceIds:
+            - "{{ createInstanceFromNewImage.InstanceIds }}"
+            Parameters:
+              Operation: Install
+        - name: TagNewinstance
+          action: aws:createTags
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            ResourceType: EC2
+            ResourceIds:
+            - "{{ createInstanceFromNewImage.InstanceIds }}"
+            Tags:
+            - Key: Type
+              Value: "{{createImage.ImageId}}-{{productOSAndVersion}}/{{requiredproduct}}/{{AMIVersion}}"
+            - Key: Automation-Instance-Type
+              Value: Automated
+        - name: terminateInspectorInstance
+          action: aws:changeInstanceState
+          timeoutSeconds: 1200
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            InstanceIds:
+            - "{{ createInstanceFromNewImage.InstanceIds }}"
+            DesiredState: terminated
+        outputs:
+        - createImage.ImageId
+Outputs:
+  AMIAutomationDoc:
+    Description: The Name of the Automated AMI.
+    Value:
+      Ref: AMIAutomationDoc
